@@ -282,8 +282,11 @@ setup_mysql_dir() {
   fi
 
   # Wrapper do mysqld: adapta flags do MySQL 5.x que o MariaDB 10.11 rejeita.
-  # bind-address é forçado para loopback (o app só precisa de 127.0.0.1; evita
-  # expor o banco em todas as interfaces de rede).
+  # bind-address é REMOVIDO (não forçado para 127.0.0.1): em Macs gerenciados, o
+  # firewall bloqueia o bind em 127.0.0.1 com "Operation not permitted" e o app
+  # não inicia. Sem a flag, o MariaDB usa o default. A exposição é mitigada porque
+  # a senha só é definida para root@127.0.0.1/localhost e não há root@'%' — nenhum
+  # login remoto se autentica.
   cat > "$mysql_dir/bin/mysqld" << WRAPPER
 #!/bin/bash
 REAL_MYSQLD="$MARIADB_BIN/mysqld"
@@ -293,8 +296,7 @@ for arg in "\$@"; do
         --innodb_additional_mem_pool_size=*) ;;
         --query_cache_size=*)                ;;
         --myisam_max_extra_sort_file_size=*) ;;
-        --bind-address=*)
-            args+=("--bind-address=127.0.0.1") ;;
+        --bind-address=*)                    ;;
         --innodb_flush_method=normal)
             args+=("--innodb_flush_method=fsync") ;;
         --default-character-set=*)
@@ -353,10 +355,12 @@ init_database() {
     fail "Falha ao inicializar o banco de dados. Detalhes em: $log"
   fi
 
-  # Socket dentro de um diretório temporário 0700 (acesso restrito ao dono) e com
-  # caminho curto (o limite de sockaddr_un é ~104 bytes).
-  local sock_dir; sock_dir=$(mktemp -d /tmp/sped.XXXXXX)
-  local sock="$sock_dir/mysqld.sock"
+  # Socket efêmero direto em /tmp. Nome aleatório (não previsível), caminho curto
+  # (o limite de sockaddr_un é ~104 bytes). Não usamos um subdiretório temporário
+  # porque, em Macs gerenciados, criar o socket dentro dele dispara EPERM no bind.
+  # A janela é de poucos segundos e o banco está vazio nela, então o risco é baixo.
+  local sock="/tmp/sped_${$}_${RANDOM}.sock"
+  rm -f "$sock"
   "$MARIADB_BIN/mysqld" \
     --basedir="$(dirname "$MARIADB_BIN")" \
     --datadir="$data_dir" \
@@ -372,7 +376,7 @@ init_database() {
   done
   if [[ ! -S "$sock" ]]; then
     kill "$pid" 2>/dev/null || true
-    rm -rf "$sock_dir"
+    rm -f "$sock"
     step_fail
     fail "O banco de dados não iniciou. Feche o programa caso já esteja aberto e tente novamente. Detalhes em: $log"
   fi
@@ -389,7 +393,7 @@ SQL
 
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  rm -rf "$sock_dir"
+  rm -f "$sock"
   rm -f "$log"
   step_ok
 }
