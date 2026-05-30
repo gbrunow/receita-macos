@@ -4,6 +4,7 @@
 # Pré-requisitos:
 #   - Java 17-22       brew install --cask temurin@21
 #   - MariaDB 10.11    brew install mariadb@10.11
+#   - python3          (já incluso no macOS via Command Line Tools)
 #
 # Uso rápido:
 #   curl -fsSL https://raw.githubusercontent.com/gbrunow/receita-macos/main/install.sh | bash
@@ -14,7 +15,13 @@ set -euo pipefail
 
 INSTALL_BASE="$HOME/ProgramasSPED"
 DEFAULT_SEARCH_DIR="$HOME/Downloads"
-DB_PASSWORD="toor321"
+
+# Senha do banco embutido. É definida pelo próprio aplicativo da Receita (SERPRO),
+# não pelo projeto — o PVA se conecta com ela. O script LÊ a senha da configuração
+# embarcada no app (read_db_password) para resistir a mudanças em versões futuras.
+# Este valor é o fallback: foi a senha observada nas versões já extraídas
+# (ECD 10.4.1, ECF 12.1.6) e é usada apenas se a leitura dinâmica falhar.
+DB_PASSWORD_FALLBACK="toor321"
 
 ECD_GLOB="SpedContabil_linux_x86_64-*.sh"
 ECF_GLOB="SpedECF_linux_x86_64-*.sh"
@@ -27,10 +34,16 @@ ECF_MAIN_CLASS="install4j.br.gov.serpro.sped.irpjpva.fronteira.ppgd.PgdApp"
 ECD_URL="https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/download/sped/ecd"
 ECF_URL="https://www.gov.br/receitafederal/pt-br/centrais-de-conteudo/download/sped/ecf"
 
-MARIADB_BIN=""          # set by check_prereqs
-ECD_INSTALLER=""        # set by discover_installers
-ECF_INSTALLER=""        # set by discover_installers
-INSTALLED=()            # app dirs installed this run
+MARIADB_BIN=""              # set by check_prereqs
+DETECTED_JAVA_HOME=""       # set by check_prereqs (validated 17-22 JDK)
+ECD_INSTALLER=""            # set by discover_installers
+ECF_INSTALLER=""            # set by discover_installers
+INSTALLED=()                # app dirs installed this run
+
+# Largura do terminal para alinhamento (mín. com fallback 80, nunca acima de 80)
+TERM_COLS=$(tput cols 2>/dev/null || echo 80)
+[[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
+[[ "$TERM_COLS" -gt 80 ]] && TERM_COLS=80
 
 # ── Saída ─────────────────────────────────────────────────────────────────────
 
@@ -40,19 +53,22 @@ info() { echo "  → $*"; }
 fail() { echo; echo "  Erro: $*" >&2; exit 1; }
 ask()  { read -r -p "  $* " reply < /dev/tty; echo "$reply"; }
 
-# Print a step label aligned for a trailing ✓/✗
-step()    { printf "  → %s" "$*"; }
-step_ok() { printf "\033[80G✓\n"; }
-step_fail() { printf "\033[80G✗\n"; }
+# Linha horizontal que respeita a largura do terminal
+hr() { printf '  '; printf '━%.0s' $(seq 1 $(( TERM_COLS - 2 ))); echo; }
 
-# Pad a section header with trailing ─ to fill 80 visible columns
+# Step label alinhado para um ✓/✗ ao final, na coluna TERM_COLS
+step()      { printf "  → %s" "$*"; }
+step_ok()   { printf "\033[%sG✓\n" "$TERM_COLS"; }
+step_fail() { printf "\033[%sG✗\n" "$TERM_COLS"; }
+
+# Cabeçalho de seção preenchido com ─ até a largura do terminal
 section_header() {
   local line="  ── $* ──"
   local chars
   chars=$(printf '%s' "$line" | wc -m | xargs)
   printf '%s' "$line"
-  local fill=$(( 80 - chars ))
-  [[ $fill -gt 0 ]] && printf '─%.0s' $(seq 1 $fill)
+  local fill=$(( TERM_COLS - chars ))
+  [[ $fill -gt 0 ]] && printf '─%.0s' $(seq 1 "$fill")
   echo
 }
 
@@ -61,26 +77,46 @@ section_header() {
 check_prereqs() {
   local java_ver brew_prefix
 
-  java_ver=$(java -version 2>&1 | awk -F'"' '/version/ {print $2}' | cut -d. -f1)
-  [[ "$java_ver" -ge 17 && "$java_ver" -le 22 ]] \
-    || fail "Java 17-22 necessário (encontrado: $java_ver). Instale com: brew install --cask temurin@21"
+  command -v java >/dev/null 2>&1 \
+    || fail "Java não encontrado. Instale com: brew install --cask temurin@21"
 
-  brew_prefix=$(brew --prefix 2>/dev/null) \
+  # Versão "feature"; trata o esquema legado 1.x (1.8 → 8)
+  java_ver=$(java -version 2>&1 | awk -F'"' '/version/ {print $2}')
+  if [[ "$java_ver" == 1.* ]]; then
+    java_ver=$(echo "$java_ver" | cut -d. -f2)
+  else
+    java_ver=$(echo "$java_ver" | cut -d. -f1)
+  fi
+  [[ "$java_ver" =~ ^[0-9]+$ ]] \
+    || fail "Não foi possível detectar a versão do Java. Instale com: brew install --cask temurin@21"
+  [[ "$java_ver" -ge 17 && "$java_ver" -le 22 ]] \
+    || fail "É necessário Java 17 a 22 (versão encontrada: $java_ver). Instale com: brew install --cask temurin@21"
+
+  command -v python3 >/dev/null 2>&1 \
+    || fail "python3 não encontrado. Instale as Ferramentas de Linha de Comando com: xcode-select --install"
+
+  command -v brew >/dev/null 2>&1 \
     || fail "Homebrew não encontrado. Instale em: https://brew.sh"
+  brew_prefix=$(brew --prefix 2>/dev/null)
 
   MARIADB_BIN="$brew_prefix/opt/mariadb@10.11/bin"
   [[ -x "$MARIADB_BIN/mysqld" ]] \
     || fail "MariaDB 10.11 não encontrado. Instale com: brew install mariadb@10.11"
+
+  # Fixa a JVM validada para o launcher (evita que um JDK 23+ instalado depois quebre o app)
+  DETECTED_JAVA_HOME=$(/usr/libexec/java_home -v "$java_ver" 2>/dev/null || true)
 
   ok "Java $java_ver e MariaDB 10.11 prontos"
 }
 
 # ── Descoberta de instaladores ────────────────────────────────────────────────
 
+# Retorna o arquivo mais recente que casa com o glob, ou vazio. Nunca falha
+# (importante sob set -e + pipefail: 'ls' de um glob sem match retorna não-zero).
 find_in_dir() {
   local dir="$1" glob="$2"
   # shellcheck disable=SC2086
-  ls -t "$dir"/$glob 2>/dev/null | head -1
+  ls -t "$dir"/$glob 2>/dev/null | head -1 || true
 }
 
 resolve_path() {
@@ -91,6 +127,8 @@ resolve_path() {
   fi
 }
 
+# Pergunta um caminho alternativo. Mensagens de erro vão para STDERR para não
+# contaminarem o valor capturado por command substitution.
 ask_custom_path() {
   local label="$1" glob="$2"
   local input resolved
@@ -100,7 +138,7 @@ ask_custom_path() {
   if [[ -n "$resolved" ]]; then
     echo "$resolved"
   else
-    nok "Nenhum instalador $label encontrado em $input — pulando."
+    echo "  ✗ Não encontrei o instalador do $label nessa pasta. Esse programa não será instalado." >&2
   fi
 }
 
@@ -131,7 +169,7 @@ discover_installers() {
       info "Nenhum instalador selecionado. Baixe os arquivos e execute o script novamente."
       exit 0
     fi
-    discover_installers "$custom_dir"
+    discover_installers "${custom_dir/#\~/$HOME}"
     return
   fi
 
@@ -171,31 +209,41 @@ discover_installers() {
 
 # ── Extração ──────────────────────────────────────────────────────────────────
 
+# O instalador .sh da Receita é um SFX Install4j: [shell] [ZIP do app] [tar.gz runtime].
 extract_app_zip() {
   local installer="$1" app_dir="$2"
   local payload total sfx_start zip_start
 
-  payload=$(grep -a -m1 "^tail -c " "$installer" | awk '{print $3}')
+  payload=$(grep -a -m1 "^tail -c " "$installer" | awk '{print $3}' || true)
+  [[ "$payload" =~ ^[0-9]+$ ]] \
+    || fail "Formato de instalador não reconhecido em $(basename "$installer"). Versões testadas: ECD 10.4.1, ECF 12.1.6."
   total=$(wc -c < "$installer" | xargs)
   sfx_start=$(( total - payload ))
 
-  zip_start=$(python3 -c "
-with open('$installer','rb') as f:
-    data = f.read($sfx_start + 4)
+  # Caminhos e offsets passados via argv com heredoc entre aspas (sem injeção/quebra
+  # por caminhos com aspas, espaços ou caracteres especiais).
+  zip_start=$(python3 - "$installer" "$sfx_start" << 'PYEOF'
+import sys
+installer, sfx_start = sys.argv[1], int(sys.argv[2])
+with open(installer, 'rb') as f:
+    data = f.read(sfx_start + 4)
 print(data.find(b'PK\x03\x04'))
-")
-  [[ "$zip_start" -gt 0 ]] || fail "Não foi possível localizar os arquivos em $installer"
+PYEOF
+)
+  [[ "$zip_start" =~ ^[0-9]+$ && "$zip_start" -ge 0 ]] \
+    || fail "Não foi possível localizar os arquivos do aplicativo em $(basename "$installer")."
 
   step "Extraindo arquivos do aplicativo..."
-  python3 - << PYEOF
-with open('$installer','rb') as f:
-    f.seek($zip_start)
-    data = f.read($sfx_start - $zip_start)
-import zipfile, io
+  python3 - "$installer" "$sfx_start" "$zip_start" "$app_dir" << 'PYEOF'
+import sys, zipfile, io
+installer, sfx_start, zip_start, app_dir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+with open(installer, 'rb') as f:
+    f.seek(zip_start)
+    data = f.read(sfx_start - zip_start)
 with zipfile.ZipFile(io.BytesIO(data)) as z:
     for member in z.namelist():
-        if chr(92) not in member:
-            z.extract(member, '$app_dir')
+        if chr(92) not in member:  # ignora entradas com path no estilo Windows
+            z.extract(member, app_dir)
 PYEOF
   step_ok
 
@@ -204,7 +252,13 @@ PYEOF
   tmp=$(mktemp -d)
   tail -c "$payload" "$installer" | tar xz -C "$tmp"
   mkdir -p "$app_dir/.install4j"
+  [[ -f "$tmp/i4jruntime.jar" ]] \
+    || { rm -rf "$tmp"; fail "Runtime do instalador (i4jruntime.jar) não encontrado — formato inesperado."; }
   cp "$tmp/i4jruntime.jar" "$app_dir/.install4j/"
+  local launchers
+  launchers=$(find "$tmp" -maxdepth 1 -name "launcher*.jar" | wc -l | xargs)
+  [[ "$launchers" -ge 1 ]] \
+    || { rm -rf "$tmp"; fail "Launcher do instalador não encontrado — formato inesperado."; }
   find "$tmp" -maxdepth 1 -name "launcher*.jar" -exec cp {} "$app_dir/.install4j/" \;
   rm -rf "$tmp"
   step_ok
@@ -220,14 +274,16 @@ setup_mysql_dir() {
   step "Configurando diretório MySQL..."
   mkdir -p "$mysql_dir/bin"
 
-  # Extract mysql share/data structure — run in subshell to isolate the cd
+  # Estrutura share/data do MySQL vem dentro do bdembutido-mysql.jar
   ( cd "$mysql_dir" && jar xf "$bdemb_jar" mysql/estrutura.zip 2>/dev/null ) || true
   if [[ -f "$mysql_dir/mysql/estrutura.zip" ]]; then
     unzip -o -q "$mysql_dir/mysql/estrutura.zip" -d "$app_dir" 2>/dev/null || true
     rm -f "$mysql_dir/mysql/estrutura.zip"
   fi
 
-  # mysqld wrapper — strips flags removed in MariaDB 10.11
+  # Wrapper do mysqld: adapta flags do MySQL 5.x que o MariaDB 10.11 rejeita.
+  # bind-address é forçado para loopback (o app só precisa de 127.0.0.1; evita
+  # expor o banco em todas as interfaces de rede).
   cat > "$mysql_dir/bin/mysqld" << WRAPPER
 #!/bin/bash
 REAL_MYSQLD="$MARIADB_BIN/mysqld"
@@ -237,7 +293,8 @@ for arg in "\$@"; do
         --innodb_additional_mem_pool_size=*) ;;
         --query_cache_size=*)                ;;
         --myisam_max_extra_sort_file_size=*) ;;
-        --bind-address=*)                    ;;
+        --bind-address=*)
+            args+=("--bind-address=127.0.0.1") ;;
         --innodb_flush_method=normal)
             args+=("--innodb_flush_method=fsync") ;;
         --default-character-set=*)
@@ -264,50 +321,80 @@ ADMINWRAPPER
   step_ok
 }
 
+# Lê a senha do banco diretamente da configuração embarcada no aplicativo
+# (configuracoes/...conexao.configuracao dentro de *-infra-persistencia.jar).
+# Assim, se a Receita mudar a senha numa versão futura, o script acompanha.
+# Cai no fallback se não conseguir localizar/ler.
+read_db_password() {
+  local app_dir="$1" jar conf pw
+  jar=$(find "$app_dir/lib" -name "*-infra-persistencia.jar" 2>/dev/null | head -1)
+  if [[ -n "$jar" ]]; then
+    conf=$(unzip -p "$jar" 'configuracoes/*conexao.configuracao' 2>/dev/null | LC_ALL=C tr -d '\r')
+    pw=$(printf '%s' "$conf" | LC_ALL=C grep -ao 'CONFIGURACAO_SENHA=[^[:space:]]*' | head -1 | cut -d= -f2-)
+  fi
+  [[ -n "${pw:-}" ]] && printf '%s' "$pw" || printf '%s' "$DB_PASSWORD_FALLBACK"
+}
+
 init_database() {
-  local app_dir="$1"
+  local app_dir="$1" db_password="$2"
   local data_dir="$app_dir/mysql/data"
+  local log; log=$(mktemp)
 
   step "Inicializando banco de dados..."
   rm -rf "$data_dir"
   mkdir -p "$data_dir"
 
-  "$MARIADB_BIN/mysql_install_db" \
-    --auth-root-authentication-method=normal \
-    --basedir="$(dirname "$MARIADB_BIN")" \
-    --datadir="$data_dir" \
-    --skip-test-db \
-    > /dev/null 2>&1
+  if ! "$MARIADB_BIN/mysql_install_db" \
+        --auth-root-authentication-method=normal \
+        --basedir="$(dirname "$MARIADB_BIN")" \
+        --datadir="$data_dir" \
+        --skip-test-db > "$log" 2>&1; then
+    step_fail
+    fail "Falha ao inicializar o banco de dados. Detalhes em: $log"
+  fi
 
-  local sock="/tmp/sped_install_$$.sock"
+  # Socket dentro de um diretório temporário 0700 (acesso restrito ao dono) e com
+  # caminho curto (o limite de sockaddr_un é ~104 bytes).
+  local sock_dir; sock_dir=$(mktemp -d /tmp/sped.XXXXXX)
+  local sock="$sock_dir/mysqld.sock"
   "$MARIADB_BIN/mysqld" \
     --basedir="$(dirname "$MARIADB_BIN")" \
     --datadir="$data_dir" \
     --socket="$sock" \
     --skip-grant-tables \
-    --skip-networking \
-    2>/dev/null &
+    --skip-networking >> "$log" 2>&1 &
   local pid=$!
 
   local tries=0
-  while [[ ! -S "$sock" && $tries -lt 15 ]]; do sleep 1; tries=$(( tries + 1 )); done
+  while [[ ! -S "$sock" && $tries -lt 30 ]]; do
+    kill -0 "$pid" 2>/dev/null || break   # mysqld morreu — não adianta esperar
+    sleep 1; tries=$(( tries + 1 ))
+  done
   if [[ ! -S "$sock" ]]; then
     kill "$pid" 2>/dev/null || true
-    fail "MariaDB não iniciou durante a configuração"
+    rm -rf "$sock_dir"
+    step_fail
+    fail "O banco de dados não iniciou. Feche o programa caso já esteja aberto e tente novamente. Detalhes em: $log"
   fi
 
-  "$MARIADB_BIN/mysql" --socket="$sock" -e \
-    "FLUSH PRIVILEGES;
-     ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '$DB_PASSWORD';
-     FLUSH PRIVILEGES;" 2>/dev/null
+  # Define a senha em todas as contas root locais e remove usuários anônimos.
+  "$MARIADB_BIN/mysql" --socket="$sock" 2>>"$log" << SQL || true
+FLUSH PRIVILEGES;
+ALTER USER IF EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '$db_password';
+ALTER USER IF EXISTS 'root'@'localhost' IDENTIFIED BY '$db_password';
+ALTER USER IF EXISTS 'root'@'::1' IDENTIFIED BY '$db_password';
+DELETE FROM mysql.global_priv WHERE User='';
+FLUSH PRIVILEGES;
+SQL
 
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
-  rm -f "$sock"
+  rm -rf "$sock_dir"
+  rm -f "$log"
   step_ok
 }
 
-# ── Windows L&F stub (ECF needs WindowsLookAndFeel which doesn't exist on macOS) ─
+# ── Windows L&F stub (o ECF exige WindowsLookAndFeel, que não existe no macOS) ──
 
 create_windows_laf_stub() {
   local app_dir="$1"
@@ -327,7 +414,8 @@ public class WindowsLookAndFeel extends MetalLookAndFeel {
 }
 JAVA
 
-  javac "$tmp/com/sun/java/swing/plaf/windows/WindowsLookAndFeel.java" 2>/dev/null
+  javac "$tmp/com/sun/java/swing/plaf/windows/WindowsLookAndFeel.java" 2>/dev/null \
+    || { rm -rf "$tmp"; fail "Falha ao compilar o stub de compatibilidade (javac)."; }
   jar cf "$stub_jar" -C "$tmp" com
   rm -rf "$tmp"
 }
@@ -339,6 +427,9 @@ write_launcher() {
   cat > "$app_dir/launch.sh" << LAUNCH
 #!/bin/bash
 cd "\$(dirname "\$0")"
+export JAVA_HOME="$DETECTED_JAVA_HOME"
+[ -x "\$JAVA_HOME/bin/java" ] || export JAVA_HOME="\$(/usr/libexec/java_home 2>/dev/null)"
+export PATH="\$JAVA_HOME/bin:\$PATH"
 exec java \\
   -Dsun.java2d.dpiaware=true \\
   -Dsun.java2d.uiScale=1.0 \\
@@ -361,19 +452,23 @@ LAUNCH
   chmod +x "$app_dir/launch.sh"
 }
 
+# Cria um .app. Retorna não-zero se não conseguir (ex.: /Applications sem permissão).
 make_app_bundle() {
-  local dest="$1" bundle_name="$2" app_dir="$3"
+  local dest="$1" display_name="$2" app_dir="$3"
   local macos_dir="$dest/Contents/MacOS"
-  local exe="$macos_dir/$bundle_name"
-  rm -rf "$dest"
-  mkdir -p "$macos_dir"
+  local exe="$macos_dir/$display_name"
+  local bundle_id
+  bundle_id="br.gov.sped.$(basename "$app_dir" | tr '[:upper:]' '[:lower:]')"
+
+  rm -rf "$dest" 2>/dev/null || true
+  mkdir -p "$macos_dir" || return 1
   cat > "$dest/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>$bundle_name</string>
-  <key>CFBundleIdentifier</key><string>br.gov.sped.$(echo "$bundle_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '.')</string>
-  <key>CFBundleName</key><string>$bundle_name</string>
+  <key>CFBundleExecutable</key><string>$display_name</string>
+  <key>CFBundleIdentifier</key><string>$bundle_id</string>
+  <key>CFBundleName</key><string>$display_name</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -381,25 +476,24 @@ make_app_bundle() {
 PLIST
   cat > "$exe" << EXE
 #!/bin/bash
-export JAVA_HOME=\$(/usr/libexec/java_home 2>/dev/null)
-export PATH="\$JAVA_HOME/bin:\$PATH"
 exec "$app_dir/launch.sh"
 EXE
   chmod +x "$exe"
   xattr -cr "$dest" 2>/dev/null || true
+  [[ -x "$exe" ]]   # valor de retorno real da função
 }
 
 create_app_bundle() {
-  local app_dir="$1" bundle_name="$2"
+  local app_dir="$1" display_name="$2"
 
   step "Criando atalho em /Applications..."
-  if make_app_bundle "/Applications/$bundle_name.app" "$bundle_name" "$app_dir" 2>/dev/null; then
+  if make_app_bundle "/Applications/$display_name.app" "$display_name" "$app_dir" 2>/dev/null; then
     step_ok
   else
     step_fail
-    local desktop_bundle="$HOME/Desktop/$bundle_name.app"
-    make_app_bundle "$desktop_bundle" "$bundle_name" "$app_dir"
-    info "Atalho criado na Área de Trabalho: $bundle_name.app"
+    make_app_bundle "$HOME/Desktop/$display_name.app" "$display_name" "$app_dir" \
+      || fail "Não foi possível criar o atalho. O programa ainda pode ser aberto por: $app_dir/launch.sh"
+    info "Atalho criado na Área de Trabalho: $display_name.app"
     info "Para aparecer no Launchpad, arraste-o para a pasta de Aplicativos."
   fi
 }
@@ -407,7 +501,7 @@ create_app_bundle() {
 # ── Instalação ────────────────────────────────────────────────────────────────
 
 install_app() {
-  local installer="$1" app_dir="$2" main_class="$3" name="$4" bundle_name="$5"
+  local installer="$1" app_dir="$2" main_class="$3" name="$4" display_name="$5"
 
   echo
   section_header "$name"
@@ -420,7 +514,7 @@ install_app() {
       info "Pulando $name."
       return
     fi
-    # Ask about data preservation, defaulting to yes
+    # Preserva os dados, perguntando ao usuário (padrão: sim)
     if [[ -d "$app_dir/mysql/data" ]]; then
       local keep_data
       keep_data=$(ask "Manter os dados existentes? [S/n]")
@@ -432,7 +526,8 @@ install_app() {
     fi
   fi
 
-  # Extract to temp dir first; move into place only on success
+  # Extrai num diretório temporário; só substitui o destino ao final.
+  # data_backup é uma CÓPIA — o original em $app_dir permanece intacto até a troca.
   local tmp_dir
   tmp_dir=$(mktemp -d)
   trap "rm -rf '$tmp_dir' '${data_backup:-}'" EXIT
@@ -441,27 +536,40 @@ install_app() {
   setup_mysql_dir "$tmp_dir"
 
   if [[ -n "$data_backup" ]]; then
-    # Restore preserved data — skip fresh db init
+    # Restaura os dados preservados (cópia — backup mantido até a troca concluir)
     rm -rf "$tmp_dir/mysql/data"
-    mv "$data_backup/data" "$tmp_dir/mysql/data"
-    data_backup=""
+    cp -r "$data_backup/data" "$tmp_dir/mysql/data"
   else
-    init_database "$tmp_dir"
+    # Senha lida da configuração embarcada no app (com fallback)
+    local db_password
+    db_password=$(read_db_password "$tmp_dir")
+    init_database "$tmp_dir" "$db_password"
   fi
 
   step "Criando stub de compatibilidade macOS..."
   create_windows_laf_stub "$tmp_dir"
   step_ok
-  write_launcher  "$tmp_dir" "$main_class"
+  write_launcher "$tmp_dir" "$main_class"
 
-  rm -rf "$app_dir"
+  # Troca segura: move o antigo para o lado, instala o novo, só então apaga o antigo.
   mkdir -p "$(dirname "$app_dir")"
-  mv "$tmp_dir" "$app_dir"
+  local old_dir=""
+  if [[ -d "$app_dir" ]]; then
+    old_dir="${app_dir}.old.$$"
+    rm -rf "$old_dir"
+    mv "$app_dir" "$old_dir"
+  fi
+  if ! mv "$tmp_dir" "$app_dir"; then
+    [[ -n "$old_dir" ]] && mv "$old_dir" "$app_dir" 2>/dev/null || true
+    fail "Falha ao instalar em $app_dir. Seus dados não foram alterados."
+  fi
   trap - EXIT
+  [[ -n "$old_dir" ]] && rm -rf "$old_dir"
+  [[ -n "$data_backup" ]] && rm -rf "$data_backup"
 
-  create_app_bundle "$app_dir" "$bundle_name"
+  create_app_bundle "$app_dir" "$display_name"
 
-  INSTALLED+=("$name|$app_dir|$bundle_name")
+  INSTALLED+=("$name|$app_dir|$display_name")
   ok "$name instalado"
 }
 
@@ -470,32 +578,31 @@ install_app() {
 print_summary() {
   [[ ${#INSTALLED[@]} -eq 0 ]] && return
   echo
-  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  hr
   echo "  Instalação concluída!"
   echo
   for entry in "${INSTALLED[@]}"; do
-    IFS='|' read -r name app_dir bundle_name <<< "$entry"
+    IFS='|' read -r name app_dir display_name <<< "$entry"
     local app_location
-    if [[ -d "/Applications/$bundle_name.app" ]]; then
-      app_location="Launchpad / Spotlight: $bundle_name"
+    if [[ -d "/Applications/$display_name.app" ]]; then
+      app_location="Launchpad / Spotlight: $display_name"
     else
-      app_location="Área de Trabalho: $bundle_name.app (arraste para a pasta de Aplicativos para aparecer no Launchpad)"
+      app_location="Área de Trabalho: $display_name.app (arraste para a pasta de Aplicativos)"
     fi
     echo "  $name"
     echo "    • $app_location"
     echo "    • Terminal: $app_dir/launch.sh"
     echo
   done
-  echo "  Dica: procure o programa no Launchpad ou Spotlight"
-  echo "  pelo nome acima, ou clique duas vezes em /Applications."
-  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Dica: procure o programa no Launchpad ou Spotlight pelo nome acima."
+  hr
 }
 
-# ── Preamble ──────────────────────────────────────────────────────────────────
+# ── Preâmbulo ─────────────────────────────────────────────────────────────────
 
 print_preamble() {
   echo
-  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  hr
   echo "  Companheiros e companheiras,"
   echo
   echo "  Nunca antes na história deste país um contador pôde instalar o SPED no"
@@ -511,7 +618,7 @@ print_preamble() {
   echo
   echo "  Baixou? Tá na pasta Downloads? Então tá bom."
   echo
-  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  hr
   echo
   echo "  Para continuar, companheiro, digite um L e pressione Enter."
   echo "  (De Lula. É claro.)"
@@ -525,7 +632,7 @@ print_preamble() {
     echo
     exit 0
   fi
-  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  hr
   echo
 }
 
@@ -535,7 +642,7 @@ print_preamble
 check_prereqs
 discover_installers
 
-[[ -n "$ECD_INSTALLER" ]] && install_app "$ECD_INSTALLER" "$ECD_APP_DIR" "$ECD_MAIN_CLASS" "$ECD_NAME" "Sped Contabil"
+[[ -n "$ECD_INSTALLER" ]] && install_app "$ECD_INSTALLER" "$ECD_APP_DIR" "$ECD_MAIN_CLASS" "$ECD_NAME" "Sped Contábil"
 [[ -n "$ECF_INSTALLER" ]] && install_app "$ECF_INSTALLER" "$ECF_APP_DIR" "$ECF_MAIN_CLASS" "$ECF_NAME" "Sped ECF"
 
 print_summary

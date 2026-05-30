@@ -11,7 +11,7 @@ brew install --cask temurin@21
 brew install mariadb@10.11
 ```
 
-O script também usa `python3`, que já vem instalado no macOS (Monterey ou mais recente).
+O script também usa `python3`. Em Macs recentes ele já vem com as Ferramentas de Linha de Comando; se faltar, instale com `xcode-select --install` (o próprio Homebrew costuma instalá-lo).
 
 ## Baixe os instaladores
 
@@ -32,7 +32,29 @@ curl -fsSL https://raw.githubusercontent.com/gbrunow/receita-macos/main/install.
 
 O script vai encontrar os arquivos, confirmar o que vai instalar e cuidar do resto.
 
+O script é **interativo**: ele mostra o que encontrou, pede confirmação antes de instalar e pergunta se deseja manter os dados ao reinstalar.
+
 Após a instalação, os programas ficam disponíveis no **Launchpad** e no **Spotlight**. Em alguns Macs corporativos, o atalho é criado na Área de Trabalho em vez de `/Applications` — basta arrastá-lo para a pasta de Aplicativos.
+
+## Solução de problemas
+
+- **"Java não encontrado" / "É necessário Java 17 a 22":** instale com `brew install --cask temurin@21`.
+- **"MariaDB 10.11 não encontrado":** instale com `brew install mariadb@10.11`.
+- **"python3 não encontrado":** rode `xcode-select --install`.
+- **Instalador não encontrado:** baixe a versão Linux nos links acima; o script procura em `~/Downloads`, mas também aceita outra pasta quando perguntado.
+- **"O banco de dados não iniciou":** feche o programa caso já esteja aberto e rode o script novamente. A mensagem de erro indica um arquivo de log com detalhes.
+
+## Como desinstalar
+
+Os programas e seus dados ficam em `~/ProgramasSPED`. Para remover completamente:
+
+```bash
+rm -rf ~/ProgramasSPED/SpedContabil ~/ProgramasSPED/SpedECF
+rm -rf "/Applications/Sped Contábil.app" "/Applications/Sped ECF.app"
+rm -rf ~/Desktop/"Sped Contábil.app" ~/Desktop/"Sped ECF.app"
+```
+
+> O banco de dados (com suas escriturações) fica dentro de `~/ProgramasSPED/*/mysql/data`. Faça uma cópia antes se quiser preservá-lo.
 
 ## Versões compatíveis
 
