@@ -74,39 +74,88 @@ section_header() {
 
 # ── Pré-requisitos ────────────────────────────────────────────────────────────
 
-check_prereqs() {
-  local java_ver brew_prefix
+# Versão "feature" do Java instalado (trata o esquema legado 1.x → 8). Vazio se ausente.
+java_feature_version() {
+  command -v java >/dev/null 2>&1 || return 0
+  local v
+  v=$(java -version 2>&1 | awk -F'"' '/version/ {print $2}')
+  if [[ "$v" == 1.* ]]; then echo "$v" | cut -d. -f2; else echo "$v" | cut -d. -f1; fi
+}
 
-  command -v java >/dev/null 2>&1 \
-    || fail "Java não encontrado. Instale com: brew install --cask temurin@21"
+java_in_range() {
+  local v; v=$(java_feature_version)
+  [[ "$v" =~ ^[0-9]+$ && "$v" -ge 17 && "$v" -le 22 ]]
+}
 
-  # Versão "feature"; trata o esquema legado 1.x (1.8 → 8)
-  java_ver=$(java -version 2>&1 | awk -F'"' '/version/ {print $2}')
-  if [[ "$java_ver" == 1.* ]]; then
-    java_ver=$(echo "$java_ver" | cut -d. -f2)
-  else
-    java_ver=$(echo "$java_ver" | cut -d. -f1)
+# Coloca o brew no PATH da sessão atual (Apple Silicon ou Intel)
+load_brew_env() {
+  if   [[ -x /opt/homebrew/bin/brew ]]; then eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew   ]]; then eval "$(/usr/local/bin/brew shellenv)"
   fi
-  [[ "$java_ver" =~ ^[0-9]+$ ]] \
-    || fail "Não foi possível detectar a versão do Java. Instale com: brew install --cask temurin@21"
-  [[ "$java_ver" -ge 17 && "$java_ver" -le 22 ]] \
-    || fail "É necessário Java 17 a 22 (versão encontrada: $java_ver). Instale com: brew install --cask temurin@21"
+}
 
-  command -v python3 >/dev/null 2>&1 \
-    || fail "python3 não encontrado. Instale as Ferramentas de Linha de Comando com: xcode-select --install"
+# Instala um pacote do Homebrew com confirmação (padrão: sim)
+brew_install() {
+  local label="$1"; shift
+  echo
+  local r; r=$(ask "Companheiro, posso instalar $label agora? [S/n]")
+  [[ "$r" =~ ^[Nn]$ ]] && fail "Ó, sem $label não dá pra seguir. Instale com: $* — e rode o script de novo."
+  info "Tô instalando $label pra você. Isso leva uns minutinhos, tenha paciência..."
+  if "$@"; then ok "$label instalado, com o trabalho do povo brasileiro"; else fail "Não consegui instalar $label, companheiro. Tente na mão: $*"; fi
+}
 
-  command -v brew >/dev/null 2>&1 \
-    || fail "Homebrew não encontrado. Instale em: https://brew.sh"
+ensure_homebrew() {
+  command -v brew >/dev/null 2>&1 && return 0
+  load_brew_env
+  command -v brew >/dev/null 2>&1 && return 0
+  echo
+  info "Companheiro, o Homebrew é necessário e ainda não tá instalado aqui."
+  local r; r=$(ask "Posso instalar o Homebrew agora? Talvez ele peça a senha do seu Mac. [S/n]")
+  [[ "$r" =~ ^[Nn]$ ]] && fail "Sem o Homebrew não tem como, companheiro. Instale em https://brew.sh e volte aqui."
+  info "Tô instalando o Homebrew. Isso leva uns minutinhos, fica tranquilo..."
+  NONINTERACTIVE=1 /bin/bash -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" < /dev/tty
+  load_brew_env
+  command -v brew >/dev/null 2>&1 || fail "Não consegui instalar o Homebrew, companheiro. Instale em https://brew.sh"
+  ok "Homebrew instalado, tá certo"
+}
+
+# Garante todos os pré-requisitos, instalando o que faltar.
+ensure_prereqs() {
+  local brew_prefix java_ver
+
+  ensure_homebrew
   brew_prefix=$(brew --prefix 2>/dev/null)
 
-  MARIADB_BIN="$brew_prefix/opt/mariadb@10.11/bin"
-  [[ -x "$MARIADB_BIN/mysqld" ]] \
-    || fail "MariaDB 10.11 não encontrado. Instale com: brew install mariadb@10.11"
-
+  # Java 17-22
+  if ! java_in_range; then
+    brew_install "o Java (Temurin 21)" brew install --cask temurin@21
+    java_in_range \
+      || fail "O Java 17 a 22 ainda não apareceu, companheiro. Abra um Terminal novo e rode o script de novo."
+  fi
+  java_ver=$(java_feature_version)
   # Fixa a JVM validada para o launcher (evita que um JDK 23+ instalado depois quebre o app)
   DETECTED_JAVA_HOME=$(/usr/libexec/java_home -v "$java_ver" 2>/dev/null || true)
 
-  ok "Java $java_ver e MariaDB 10.11 prontos"
+  # MariaDB 10.11
+  MARIADB_BIN="$brew_prefix/opt/mariadb@10.11/bin"
+  if [[ ! -x "$MARIADB_BIN/mysqld" ]]; then
+    brew_install "o MariaDB 10.11" brew install mariadb@10.11
+    brew_prefix=$(brew --prefix 2>/dev/null)
+    MARIADB_BIN="$brew_prefix/opt/mariadb@10.11/bin"
+    [[ -x "$MARIADB_BIN/mysqld" ]] || fail "Não achei o MariaDB 10.11 depois de instalar, companheiro."
+  fi
+
+  # python3 (vem com as Ferramentas de Linha de Comando do Xcode)
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo
+    info "Companheiro, precisamos das Ferramentas de Linha de Comando (o python3)."
+    info "Vou abrir o instalador do macOS — conclua ali na janela que aparecer, tá?"
+    xcode-select --install 2>/dev/null || true
+    fail "Quando terminar de instalar as Ferramentas de Linha de Comando, rode o script de novo, companheiro."
+  fi
+
+  ok "Tá tudo pronto, companheiro: Java $java_ver e MariaDB 10.11"
 }
 
 # ── Descoberta de instaladores ────────────────────────────────────────────────
@@ -132,13 +181,13 @@ resolve_path() {
 ask_custom_path() {
   local label="$1" glob="$2"
   local input resolved
-  input=$(ask "O instalador do $label está em outra pasta? Informe o caminho (ou Enter para pular):")
+  input=$(ask "O instalador do $label tá em outra pasta, companheiro? Informe o caminho (ou Enter pra pular):")
   [[ -z "$input" ]] && return 0
   resolved=$(resolve_path "$input" "$glob")
   if [[ -n "$resolved" ]]; then
     echo "$resolved"
   else
-    echo "  ✗ Não encontrei o instalador do $label nessa pasta. Esse programa não será instalado." >&2
+    echo "  ✗ Não encontrei o instalador do $label nessa pasta, companheiro. Esse programa não vai ser instalado." >&2
   fi
 }
 
@@ -146,27 +195,27 @@ discover_installers() {
   local search_dir="${1:-$DEFAULT_SEARCH_DIR}"
 
   echo
-  info "Procurando instaladores em $search_dir..."
+  info "Vou procurar os instaladores em $search_dir..."
   echo
 
   ECD_INSTALLER=$(find_in_dir "$search_dir" "$ECD_GLOB")
   ECF_INSTALLER=$(find_in_dir "$search_dir" "$ECF_GLOB")
 
-  [[ -n "$ECD_INSTALLER" ]] && ok "ECD: $(basename "$ECD_INSTALLER")" || nok "ECD não encontrado"
-  [[ -n "$ECF_INSTALLER" ]] && ok "ECF: $(basename "$ECF_INSTALLER")" || nok "ECF não encontrado"
+  [[ -n "$ECD_INSTALLER" ]] && ok "ECD: $(basename "$ECD_INSTALLER")" || nok "ECD: não encontrei, companheiro"
+  [[ -n "$ECF_INSTALLER" ]] && ok "ECF: $(basename "$ECF_INSTALLER")" || nok "ECF: não encontrei, companheiro"
 
   # Nada encontrado — pede outra pasta ou encerra
   if [[ -z "$ECD_INSTALLER" && -z "$ECF_INSTALLER" ]]; then
     echo
-    info "Os instaladores devem ser baixados do site da Receita Federal (versão Linux):"
+    info "Ó, os instaladores você baixa no site da Receita Federal, na versão Linux:"
     info "  ECD: $ECD_URL"
     info "  ECF: $ECF_URL"
     echo
     local custom_dir
-    custom_dir=$(ask "Em qual pasta estão os instaladores?")
+    custom_dir=$(ask "Em qual pasta tão os instaladores, companheiro?")
     if [[ -z "$custom_dir" ]]; then
       echo
-      info "Nenhum instalador selecionado. Baixe os arquivos e execute o script novamente."
+      info "Não selecionamos nenhum instalador, companheiro. Baixe os arquivos e rode o script de novo."
       exit 0
     fi
     discover_installers "${custom_dir/#\~/$HOME}"
@@ -182,27 +231,27 @@ discover_installers() {
   echo
   if [[ -n "$ECD_INSTALLER" && -n "$ECF_INSTALLER" ]]; then
     local confirm
-    confirm=$(ask "Instalar os dois? [S/n]")
+    confirm=$(ask "Vamo instalar os dois, companheiro? [S/n]")
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
       local c_ecd c_ecf
-      c_ecd=$(ask "Instalar o $ECD_NAME? [S/n]")
+      c_ecd=$(ask "Vamo instalar o $ECD_NAME? [S/n]")
       [[ "$c_ecd" =~ ^[Nn]$ ]] && ECD_INSTALLER=""
-      c_ecf=$(ask "Instalar o $ECF_NAME? [S/n]")
+      c_ecf=$(ask "Vamo instalar o $ECF_NAME? [S/n]")
       [[ "$c_ecf" =~ ^[Nn]$ ]] && ECF_INSTALLER=""
     fi
   elif [[ -n "$ECD_INSTALLER" ]]; then
     local confirm
-    confirm=$(ask "Instalar o $ECD_NAME? [S/n]")
+    confirm=$(ask "Vamo instalar o $ECD_NAME? [S/n]")
     [[ "$confirm" =~ ^[Nn]$ ]] && ECD_INSTALLER=""
   elif [[ -n "$ECF_INSTALLER" ]]; then
     local confirm
-    confirm=$(ask "Instalar o $ECF_NAME? [S/n]")
+    confirm=$(ask "Vamo instalar o $ECF_NAME? [S/n]")
     [[ "$confirm" =~ ^[Nn]$ ]] && ECF_INSTALLER=""
   fi
 
   if [[ -z "$ECD_INSTALLER" && -z "$ECF_INSTALLER" ]]; then
     echo
-    info "Nenhum instalador selecionado."
+    info "Não selecionamos nada pra instalar, companheiro."
     exit 0
   fi
 }
@@ -216,7 +265,7 @@ extract_app_zip() {
 
   payload=$(grep -a -m1 "^tail -c " "$installer" | awk '{print $3}' || true)
   [[ "$payload" =~ ^[0-9]+$ ]] \
-    || fail "Formato de instalador não reconhecido em $(basename "$installer"). Versões testadas: ECD 10.4.1, ECF 12.1.6."
+    || fail "Esse instalador eu não reconheci, companheiro. Versões testadas: ECD 10.4.1, ECF 12.1.6."
   total=$(wc -c < "$installer" | xargs)
   sfx_start=$(( total - payload ))
 
@@ -231,9 +280,9 @@ print(data.find(b'PK\x03\x04'))
 PYEOF
 )
   [[ "$zip_start" =~ ^[0-9]+$ && "$zip_start" -ge 0 ]] \
-    || fail "Não foi possível localizar os arquivos do aplicativo em $(basename "$installer")."
+    || fail "Não consegui achar os arquivos do programa em $(basename "$installer"), companheiro."
 
-  step "Extraindo arquivos do aplicativo..."
+  step "Preparando os arquivos do programa..."
   python3 - "$installer" "$sfx_start" "$zip_start" "$app_dir" << 'PYEOF'
 import sys, zipfile, io
 installer, sfx_start, zip_start, app_dir = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
@@ -247,18 +296,18 @@ with zipfile.ZipFile(io.BytesIO(data)) as z:
 PYEOF
   step_ok
 
-  step "Extraindo runtime do instalador..."
+  step "Preparando o runtime do instalador..."
   local tmp
   tmp=$(mktemp -d)
   tail -c "$payload" "$installer" | tar xz -C "$tmp"
   mkdir -p "$app_dir/.install4j"
   [[ -f "$tmp/i4jruntime.jar" ]] \
-    || { rm -rf "$tmp"; fail "Runtime do instalador (i4jruntime.jar) não encontrado — formato inesperado."; }
+    || { rm -rf "$tmp"; fail "Não achei o runtime do instalador (i4jruntime.jar), companheiro — formato inesperado."; }
   cp "$tmp/i4jruntime.jar" "$app_dir/.install4j/"
   local launchers
   launchers=$(find "$tmp" -maxdepth 1 -name "launcher*.jar" | wc -l | xargs)
   [[ "$launchers" -ge 1 ]] \
-    || { rm -rf "$tmp"; fail "Launcher do instalador não encontrado — formato inesperado."; }
+    || { rm -rf "$tmp"; fail "Não achei o launcher do instalador, companheiro — formato inesperado."; }
   find "$tmp" -maxdepth 1 -name "launcher*.jar" -exec cp {} "$app_dir/.install4j/" \;
   rm -rf "$tmp"
   step_ok
@@ -271,7 +320,7 @@ setup_mysql_dir() {
   local mysql_dir="$app_dir/mysql"
   local bdemb_jar="$app_dir/lib/br.gov.serpro.bdembutido/bdembutido-mysql.jar"
 
-  step "Configurando diretório MySQL..."
+  step "Arrumando o banco de dados..."
   mkdir -p "$mysql_dir/bin"
 
   # Estrutura share/data do MySQL vem dentro do bdembutido-mysql.jar
@@ -342,7 +391,7 @@ init_database() {
   local data_dir="$app_dir/mysql/data"
   local log; log=$(mktemp)
 
-  step "Inicializando banco de dados..."
+  step "Inicializando o banco de dados..."
   rm -rf "$data_dir"
   mkdir -p "$data_dir"
 
@@ -352,7 +401,7 @@ init_database() {
         --datadir="$data_dir" \
         --skip-test-db > "$log" 2>&1; then
     step_fail
-    fail "Falha ao inicializar o banco de dados. Detalhes em: $log"
+    fail "Não consegui preparar o banco de dados, companheiro. Os detalhes tão em: $log"
   fi
 
   # Socket efêmero direto em /tmp. Nome aleatório (não previsível), caminho curto
@@ -378,7 +427,7 @@ init_database() {
     kill "$pid" 2>/dev/null || true
     rm -f "$sock"
     step_fail
-    fail "O banco de dados não iniciou. Feche o programa caso já esteja aberto e tente novamente. Detalhes em: $log"
+    fail "O banco de dados não subiu, companheiro. Se o programa já tiver aberto, feche e tente de novo. Detalhes em: $log"
   fi
 
   # Define a senha em todas as contas root locais e remove usuários anônimos.
@@ -419,7 +468,7 @@ public class WindowsLookAndFeel extends MetalLookAndFeel {
 JAVA
 
   javac "$tmp/com/sun/java/swing/plaf/windows/WindowsLookAndFeel.java" 2>/dev/null \
-    || { rm -rf "$tmp"; fail "Falha ao compilar o stub de compatibilidade (javac)."; }
+    || { rm -rf "$tmp"; fail "Não consegui preparar a peça de compatibilidade (javac), companheiro."; }
   jar cf "$stub_jar" -C "$tmp" com
   rm -rf "$tmp"
 }
@@ -490,15 +539,15 @@ EXE
 create_app_bundle() {
   local app_dir="$1" display_name="$2"
 
-  step "Criando atalho em /Applications..."
+  step "Criando o atalho em /Applications..."
   if make_app_bundle "/Applications/$display_name.app" "$display_name" "$app_dir" 2>/dev/null; then
     step_ok
   else
     step_fail
     make_app_bundle "$HOME/Desktop/$display_name.app" "$display_name" "$app_dir" \
-      || fail "Não foi possível criar o atalho. O programa ainda pode ser aberto por: $app_dir/launch.sh"
-    info "Atalho criado na Área de Trabalho: $display_name.app"
-    info "Para aparecer no Launchpad, arraste-o para a pasta de Aplicativos."
+      || fail "Não consegui criar o atalho, companheiro. Mas o programa abre assim: $app_dir/launch.sh"
+    info "Atalho criado na sua Área de Trabalho: $display_name.app"
+    info "Pra ele aparecer no Launchpad, é só arrastar pra pasta de Aplicativos, companheiro."
   fi
 }
 
@@ -513,19 +562,19 @@ install_app() {
   local data_backup=""
   if [[ -d "$app_dir" ]]; then
     local confirm
-    confirm=$(ask "$app_dir já existe. Reinstalar? [s/N]")
+    confirm=$(ask "O $app_dir já existe, companheiro. Reinstalar? [s/N]")
     if [[ ! "$confirm" =~ ^[Ss]$ ]]; then
-      info "Pulando $name."
+      info "Tá certo, vou pular o $name."
       return
     fi
     # Preserva os dados, perguntando ao usuário (padrão: sim)
     if [[ -d "$app_dir/mysql/data" ]]; then
       local keep_data
-      keep_data=$(ask "Manter os dados existentes? [S/n]")
+      keep_data=$(ask "Quer manter os dados que já estão aí? [S/n]")
       if [[ ! "$keep_data" =~ ^[Nn]$ ]]; then
         data_backup=$(mktemp -d)
         cp -r "$app_dir/mysql/data" "$data_backup/"
-        info "Dados preservados."
+        info "Seus dados estão guardados, pode ficar tranquilo."
       fi
     fi
   fi
@@ -565,7 +614,7 @@ install_app() {
   fi
   if ! mv "$tmp_dir" "$app_dir"; then
     [[ -n "$old_dir" ]] && mv "$old_dir" "$app_dir" 2>/dev/null || true
-    fail "Falha ao instalar em $app_dir. Seus dados não foram alterados."
+    fail "Não consegui instalar em $app_dir, companheiro. Mas seus dados estão intactos."
   fi
   trap - EXIT
   [[ -n "$old_dir" ]] && rm -rf "$old_dir"
@@ -574,7 +623,7 @@ install_app() {
   create_app_bundle "$app_dir" "$display_name"
 
   INSTALLED+=("$name|$app_dir|$display_name")
-  ok "$name instalado"
+  ok "$name instalado, companheiro"
 }
 
 # ── Resumo final ──────────────────────────────────────────────────────────────
@@ -583,7 +632,7 @@ print_summary() {
   [[ ${#INSTALLED[@]} -eq 0 ]] && return
   echo
   hr
-  echo "  Instalação concluída!"
+  echo "  Tá feito, companheiro! A instalação foi concluída."
   echo
   for entry in "${INSTALLED[@]}"; do
     IFS='|' read -r name app_dir display_name <<< "$entry"
@@ -598,7 +647,8 @@ print_summary() {
     echo "    • Terminal: $app_dir/launch.sh"
     echo
   done
-  echo "  Dica: procure o programa no Launchpad ou Spotlight pelo nome acima."
+  echo "  Ó: é só procurar o programa no Launchpad ou no Spotlight pelo nome aí em cima."
+  echo "  Agora é trabalhar. Um abraço, e viva o povo brasileiro!"
   hr
 }
 
@@ -643,7 +693,7 @@ print_preamble() {
 # ── Principal ─────────────────────────────────────────────────────────────────
 
 print_preamble
-check_prereqs
+ensure_prereqs
 discover_installers
 
 [[ -n "$ECD_INSTALLER" ]] && install_app "$ECD_INSTALLER" "$ECD_APP_DIR" "$ECD_MAIN_CLASS" "$ECD_NAME" "Sped Contábil"
