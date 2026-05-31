@@ -1,10 +1,9 @@
 #!/bin/bash
 # install.sh — Instala o SPED ECD e/ou ECF no macOS (Apple Silicon e Intel)
 #
-# Pré-requisitos:
-#   - Java 17-22       brew install --cask temurin@21
-#   - MariaDB 10.11    brew install mariadb@10.11
-#   - python3          (já incluso no macOS via Command Line Tools)
+# O script instala sozinho o que faltar (Homebrew, Java 17-22, MariaDB 10.11),
+# pedindo confirmação. Você só precisa baixar antes os instaladores do SPED
+# (versão Linux) do site da Receita Federal — eles devem estar em ~/Downloads.
 #
 # Uso rápido:
 #   curl -fsSL https://raw.githubusercontent.com/gbrunow/receita-macos/main/install.sh | bash
