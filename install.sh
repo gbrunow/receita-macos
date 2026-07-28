@@ -47,6 +47,12 @@ TERM_COLS=$(tput cols 2>/dev/null || echo 80)
 [[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
 [[ "$TERM_COLS" -gt 80 ]] && TERM_COLS=80
 
+# ── Modo ──────────────────────────────────────────────────────────────────────
+
+# --diagnostico só coleta informação: não instala, não apaga, não altera nada.
+MODE="instalar"
+[[ "${1:-}" == "--diagnostico" || "${1:-}" == "--diagnostic" ]] && MODE="diagnosticar"
+
 # ── Log ───────────────────────────────────────────────────────────────────────
 
 # Toda a saída (stdout + stderr) é duplicada para um arquivo, para diagnóstico.
@@ -54,11 +60,25 @@ TERM_COLS=$(tput cols 2>/dev/null || echo 80)
 # processo interno é encerrado antes de esvaziar o buffer e o arquivo termina
 # vazio justamente quando o script falha — que é quando o log importa.
 LOG_FILE="$HOME/Desktop/sped-instalacao.log"
-[[ -d "$HOME/Desktop" ]] || LOG_FILE="$HOME/sped-instalacao.log"
-: > "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/sped-instalacao.log"
-: > "$LOG_FILE" 2>/dev/null || true
-exec > >(tee -a "$LOG_FILE") 2>&1
-echo "[sped-instalacao v$SCRIPT_VERSION — $(date '+%Y-%m-%d %H:%M:%S')]" >> "$LOG_FILE"
+DIAG_FILE="$HOME/Desktop/sped-diagnostico.txt"
+if [[ ! -d "$HOME/Desktop" ]]; then
+  LOG_FILE="$HOME/sped-instalacao.log"
+  DIAG_FILE="$HOME/sped-diagnostico.txt"
+fi
+
+if [[ "$MODE" == "diagnosticar" ]]; then
+  # O relatório vai para o próprio arquivo de diagnóstico; o log da instalação
+  # é preservado intacto, já que é justamente uma das coisas a inspecionar.
+  : > "$DIAG_FILE" 2>/dev/null || DIAG_FILE="/tmp/sped-diagnostico.txt"
+  : > "$DIAG_FILE" 2>/dev/null || true
+  OUT_FILE="$DIAG_FILE"
+else
+  : > "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/sped-instalacao.log"
+  : > "$LOG_FILE" 2>/dev/null || true
+  OUT_FILE="$LOG_FILE"
+fi
+exec > >(tee -a "$OUT_FILE") 2>&1
+echo "[sped $MODE v$SCRIPT_VERSION — $(date '+%Y-%m-%d %H:%M:%S')]" >> "$OUT_FILE"
 
 # ── Saída ─────────────────────────────────────────────────────────────────────
 
@@ -71,7 +91,7 @@ fail() {
   log_environment
   echo
   echo "  Ó, o relatório completo ficou salvo aqui, companheiro:" >&2
-  echo "    $LOG_FILE" >&2
+  echo "    $OUT_FILE" >&2
   echo "  Manda esse arquivo pra quem te passou o script — lá tá tudo explicadinho." >&2
   exit 1
 }
@@ -788,8 +808,72 @@ log_environment() {
     echo "instalações:"
     ls -la "$INSTALL_BASE" 2>&1 || true
     echo "─────────────────────────────────────────────────────"
-  } >> "$LOG_FILE" 2>&1 || true
+  } >> "$OUT_FILE" 2>&1 || true
 }
+
+# Relatório completo do estado atual. Só lê — não instala nem altera nada.
+run_diagnostics() {
+  echo
+  hr
+  echo "  Modo diagnóstico, companheiro. Não vou instalar nem apagar nada —"
+  echo "  é só uma olhada pra entender o que aconteceu por aí."
+  hr
+
+  echo
+  section_header "Sistema"
+  sw_vers 2>&1 || true
+  echo "  arquitetura: $(uname -m)"
+  echo "  versão do script: $SCRIPT_VERSION"
+
+  echo
+  section_header "Java"
+  /usr/libexec/java_home -V 2>&1 || true
+  local jh; jh=$(find_java_home_in_range || true)
+  [[ -n "$jh" ]] && ok "Java 17-22 encontrado: $jh" || nok "Nenhum Java 17-22 encontrado"
+
+  echo
+  section_header "Programas instalados"
+  ls -la "$INSTALL_BASE" 2>&1 || true
+  local d
+  for d in "$INSTALL_BASE"/*/; do
+    [[ -d "$d" ]] || continue
+    [[ -x "$d/launch.sh" ]] && ok "launch.sh pronto em $d" || nok "sem launch.sh em $d"
+  done
+
+  echo
+  section_header "Atalhos (.app)"
+  [[ -w /Applications ]] && ok "/Applications aceita gravação" \
+                         || nok "/Applications NÃO aceita gravação (Mac gerenciado)"
+  local found
+  found=$(find "$HOME/Desktop" /Applications -maxdepth 1 -iname "*Sped*.app" 2>/dev/null || true)
+  if [[ -n "$found" ]]; then
+    echo "$found" | while IFS= read -r a; do ok "$a"; done
+  else
+    nok "Nenhum atalho do Sped encontrado"
+  fi
+
+  echo
+  section_header "Log da instalação anterior"
+  if [[ -f "$LOG_FILE" ]]; then
+    info "Últimas linhas de $LOG_FILE:"
+    tail -40 "$LOG_FILE" 2>&1 || true
+  else
+    info "Não achei log de instalação (instalou com uma versão antiga do script)."
+  fi
+
+  echo
+  hr
+  echo "  Prontinho, companheiro! O relatório ficou salvo aqui:"
+  echo "    $DIAG_FILE"
+  echo "  Manda esse arquivo pra quem te passou o script."
+  hr
+  echo
+}
+
+if [[ "$MODE" == "diagnosticar" ]]; then
+  run_diagnostics
+  exit 0
+fi
 
 print_preamble
 ensure_prereqs
