@@ -15,6 +15,9 @@ set -euo pipefail
 INSTALL_BASE="$HOME/ProgramasSPED"
 DEFAULT_SEARCH_DIR="$HOME/Downloads"
 
+# Marca a versão do script no log, para saber exatamente o que rodou.
+SCRIPT_VERSION="1.0.0"
+
 # Senha do banco embutido. É definida pelo próprio aplicativo da Receita (SERPRO),
 # não pelo projeto — o PVA se conecta com ela. O script LÊ a senha da configuração
 # embarcada no app (read_db_password) para resistir a mudanças em versões futuras.
@@ -44,12 +47,34 @@ TERM_COLS=$(tput cols 2>/dev/null || echo 80)
 [[ "$TERM_COLS" =~ ^[0-9]+$ ]] || TERM_COLS=80
 [[ "$TERM_COLS" -gt 80 ]] && TERM_COLS=80
 
+# ── Log ───────────────────────────────────────────────────────────────────────
+
+# Toda a saída (stdout + stderr) é duplicada para um arquivo, para diagnóstico.
+# Um único `tee -a`, sem process substitution aninhada: com `tee >(sed ...)` o
+# processo interno é encerrado antes de esvaziar o buffer e o arquivo termina
+# vazio justamente quando o script falha — que é quando o log importa.
+LOG_FILE="$HOME/Desktop/sped-instalacao.log"
+[[ -d "$HOME/Desktop" ]] || LOG_FILE="$HOME/sped-instalacao.log"
+: > "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/sped-instalacao.log"
+: > "$LOG_FILE" 2>/dev/null || true
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[sped-instalacao v$SCRIPT_VERSION — $(date '+%Y-%m-%d %H:%M:%S')]" >> "$LOG_FILE"
+
 # ── Saída ─────────────────────────────────────────────────────────────────────
 
 ok()   { echo "  ✓ $*"; }
 nok()  { echo "  ✗ $*"; }
 info() { echo "  → $*"; }
-fail() { echo; echo "  Erro: $*" >&2; exit 1; }
+fail() {
+  echo
+  echo "  Erro: $*" >&2
+  log_environment
+  echo
+  echo "  Ó, o relatório completo ficou salvo aqui, companheiro:" >&2
+  echo "    $LOG_FILE" >&2
+  echo "  Manda esse arquivo pra quem te passou o script — lá tá tudo explicadinho." >&2
+  exit 1
+}
 ask()  { read -r -p "  $* " reply < /dev/tty; echo "$reply"; }
 
 # Linha horizontal que respeita a largura do terminal
@@ -253,6 +278,7 @@ discover_installers() {
     if [[ -z "$custom_dir" ]]; then
       echo
       info "Não selecionamos nenhum instalador, companheiro. Baixe os arquivos e rode o script de novo."
+      log_environment
       exit 0
     fi
     discover_installers "${custom_dir/#\~/$HOME}"
@@ -698,7 +724,9 @@ print_summary() {
     echo "    • Terminal: $app_dir/launch.sh"
     echo
   done
-  echo "  Ó: é só procurar o programa no Launchpad ou no Spotlight pelo nome aí em cima."
+  echo "  Relatório da instalação salvo em: $LOG_FILE"
+  echo "  Deu algum problema? Manda esse arquivo pra quem te passou o script."
+  echo
   echo "  Agora é trabalhar. Um abraço, e viva o povo brasileiro!"
   hr
 }
@@ -743,6 +771,24 @@ print_preamble() {
 
 # ── Principal ─────────────────────────────────────────────────────────────────
 
+# Contexto do ambiente, só no arquivo de log (não polui a tela do usuário).
+log_environment() {
+  {
+    echo
+    echo "───── Diagnóstico (para quem for analisar o log) ─────"
+    sw_vers 2>&1 | tr '\n' ' '; echo "arch=$(uname -m)"
+    echo "script_version=$SCRIPT_VERSION"
+    echo "java_home=$DETECTED_JAVA_HOME"
+    echo "mariadb_bin=$MARIADB_BIN"
+    echo "/Applications gravável: $([[ -w /Applications ]] && echo sim || echo não)"
+    echo "atalhos encontrados:"
+    find "$HOME/Desktop" /Applications -maxdepth 1 -iname "*Sped*.app" 2>/dev/null || true
+    echo "instalações:"
+    ls -la "$INSTALL_BASE" 2>&1 || true
+    echo "─────────────────────────────────────────────────────"
+  } >> "$LOG_FILE" 2>&1 || true
+}
+
 print_preamble
 ensure_prereqs
 discover_installers
@@ -751,3 +797,4 @@ discover_installers
 [[ -n "$ECF_INSTALLER" ]] && install_app "$ECF_INSTALLER" "$ECF_APP_DIR" "$ECF_MAIN_CLASS" "$ECF_NAME" "Sped ECF"
 
 print_summary
+log_environment
