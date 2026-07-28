@@ -73,17 +73,47 @@ section_header() {
 
 # ── Pré-requisitos ────────────────────────────────────────────────────────────
 
-# Versão "feature" do Java instalado (trata o esquema legado 1.x → 8). Vazio se ausente.
-java_feature_version() {
-  command -v java >/dev/null 2>&1 || return 0
-  local v
-  v=$(java -version 2>&1 | awk -F'"' '/version/ {print $2}')
+# Versão "feature" de um JDK específico (trata o esquema legado 1.x → 8).
+# Vazio se o binário não existir ou não rodar.
+jdk_feature_version() {
+  local java_bin="$1" v
+  [[ -x "$java_bin" ]] || return 0
+  v=$("$java_bin" -version 2>&1 | awk -F'"' '/version/ {print $2; exit}' || true)
+  [[ -n "$v" ]] || return 0
   if [[ "$v" == 1.* ]]; then echo "$v" | cut -d. -f2; else echo "$v" | cut -d. -f1; fi
 }
 
-java_in_range() {
-  local v; v=$(java_feature_version)
-  [[ "$v" =~ ^[0-9]+$ && "$v" -ge 17 && "$v" -le 22 ]]
+version_in_range() {
+  [[ "$1" =~ ^[0-9]+$ && "$1" -ge 17 && "$1" -le 22 ]]
+}
+
+# Lista todos os JAVA_HOME candidatos do sistema, um por linha. Nunca falha.
+list_jdk_homes() {
+  local d p
+  /usr/libexec/java_home -V 2>&1 | sed -n 's|.* \(/.*/Contents/Home\)$|\1|p' || true
+  for d in /Library/Java/JavaVirtualMachines/*/Contents/Home; do
+    [[ -d "$d" ]] && echo "$d"
+  done
+  for p in /opt/homebrew /usr/local; do
+    for d in "$p"/opt/openjdk@*/libexec/openjdk.jdk/Contents/Home; do
+      [[ -d "$d" ]] && echo "$d"
+    done
+  done
+  return 0
+}
+
+# Ecoa o JAVA_HOME do primeiro JDK 17-22 encontrado; retorna não-zero se não houver.
+# Varremos todos os JDKs em vez de olhar o `java` do PATH porque /usr/bin/java
+# resolve sempre para o mais novo instalado: com um JDK 23+ presente, um JDK 21
+# perfeitamente válido ficaria invisível.
+find_java_home_in_range() {
+  local home v
+  while IFS= read -r home; do
+    [[ -n "$home" ]] || continue
+    v=$(jdk_feature_version "$home/bin/java")
+    if version_in_range "$v"; then echo "$home"; return 0; fi
+  done <<< "$(list_jdk_homes)"
+  return 1
 }
 
 # Coloca o brew no PATH da sessão atual (Apple Silicon ou Intel)
@@ -127,14 +157,15 @@ ensure_prereqs() {
   brew_prefix=$(brew --prefix 2>/dev/null)
 
   # Java 17-22
-  if ! java_in_range; then
+  DETECTED_JAVA_HOME=$(find_java_home_in_range || true)
+  if [[ -z "$DETECTED_JAVA_HOME" ]]; then
     brew_install "o Java (Temurin 21)" brew install --cask temurin@21
-    java_in_range \
+    DETECTED_JAVA_HOME=$(find_java_home_in_range || true)
+    [[ -n "$DETECTED_JAVA_HOME" ]] \
       || fail "O Java 17 a 22 ainda não apareceu, companheiro. Abra um Terminal novo e rode o script de novo."
   fi
-  java_ver=$(java_feature_version)
   # Fixa a JVM validada para o launcher (evita que um JDK 23+ instalado depois quebre o app)
-  DETECTED_JAVA_HOME=$(/usr/libexec/java_home -v "$java_ver" 2>/dev/null || true)
+  java_ver=$(jdk_feature_version "$DETECTED_JAVA_HOME/bin/java")
 
   # MariaDB 10.11
   MARIADB_BIN="$brew_prefix/opt/mariadb@10.11/bin"
@@ -480,7 +511,19 @@ write_launcher() {
 #!/bin/bash
 cd "\$(dirname "\$0")"
 export JAVA_HOME="$DETECTED_JAVA_HOME"
-[ -x "\$JAVA_HOME/bin/java" ] || export JAVA_HOME="\$(/usr/libexec/java_home 2>/dev/null)"
+# Se o JDK fixado sumiu, procura outro 17-22 — 'java_home' sem filtro devolveria
+# o mais novo do sistema, que é justamente o que a fixação evita.
+if [ ! -x "\$JAVA_HOME/bin/java" ]; then
+  for h in \$(/usr/libexec/java_home -V 2>&1 | sed -n 's|.* \\(/.*/Contents/Home\\)\$|\\1|p'); do
+    v=\$("\$h/bin/java" -version 2>&1 | awk -F'"' '/version/ {print \$2; exit}')
+    v=\${v%%.*}
+    if [ "\$v" -ge 17 ] 2>/dev/null && [ "\$v" -le 22 ]; then export JAVA_HOME="\$h"; break; fi
+  done
+fi
+if [ ! -x "\$JAVA_HOME/bin/java" ]; then
+  echo "Companheiro, não achei o Java 17 a 22 neste Mac. Rode o instalador de novo." >&2
+  exit 1
+fi
 export PATH="\$JAVA_HOME/bin:\$PATH"
 exec java \\
   -Dsun.java2d.dpiaware=true \\
