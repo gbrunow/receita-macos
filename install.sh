@@ -832,6 +832,16 @@ run_diagnostics() {
   [[ -n "$jh" ]] && ok "Java 17-22 encontrado: $jh" || nok "Nenhum Java 17-22 encontrado"
 
   echo
+  section_header "Instaladores baixados"
+  local ecd_found ecf_found
+  ecd_found=$(find_in_dir "$DEFAULT_SEARCH_DIR" "$ECD_GLOB")
+  ecf_found=$(find_in_dir "$DEFAULT_SEARCH_DIR" "$ECF_GLOB")
+  [[ -n "$ecd_found" ]] && ok "ECD: $ecd_found" || nok "ECD: nenhum instalador em $DEFAULT_SEARCH_DIR"
+  [[ -n "$ecf_found" ]] && ok "ECF: $ecf_found" || nok "ECF: nenhum instalador em $DEFAULT_SEARCH_DIR"
+  info "Arquivos .sh na pasta Downloads:"
+  ls -la "$DEFAULT_SEARCH_DIR"/*.sh 2>&1 || true
+
+  echo
   section_header "Programas instalados"
   ls -la "$INSTALL_BASE" 2>&1 || true
   local d
