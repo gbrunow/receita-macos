@@ -354,7 +354,7 @@ setup_mysql_dir() {
   mkdir -p "$mysql_dir/bin"
 
   # Estrutura share/data do MySQL vem dentro do bdembutido-mysql.jar
-  ( cd "$mysql_dir" && jar xf "$bdemb_jar" mysql/estrutura.zip 2>/dev/null ) || true
+  ( cd "$mysql_dir" && "$DETECTED_JAVA_HOME/bin/jar" xf "$bdemb_jar" mysql/estrutura.zip 2>/dev/null ) || true
   if [[ -f "$mysql_dir/mysql/estrutura.zip" ]]; then
     unzip -o -q "$mysql_dir/mysql/estrutura.zip" -d "$app_dir" 2>/dev/null || true
     rm -f "$mysql_dir/mysql/estrutura.zip"
@@ -497,9 +497,11 @@ public class WindowsLookAndFeel extends MetalLookAndFeel {
 }
 JAVA
 
-  javac "$tmp/com/sun/java/swing/plaf/windows/WindowsLookAndFeel.java" 2>/dev/null \
+  # javac/jar do JDK fixado, não do PATH: um JDK mais novo geraria um .class com
+  # versão de bytecode que a JVM 17-22 usada no launcher se recusa a carregar.
+  "$DETECTED_JAVA_HOME/bin/javac" "$tmp/com/sun/java/swing/plaf/windows/WindowsLookAndFeel.java" 2>/dev/null \
     || { rm -rf "$tmp"; fail "Não consegui preparar a peça de compatibilidade (javac), companheiro."; }
-  jar cf "$stub_jar" -C "$tmp" com
+  "$DETECTED_JAVA_HOME/bin/jar" cf "$stub_jar" -C "$tmp" com
   rm -rf "$tmp"
 }
 
