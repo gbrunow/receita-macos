@@ -713,15 +713,17 @@ print_summary() {
   echo
   for entry in "${INSTALLED[@]}"; do
     IFS='|' read -r name app_dir display_name <<< "$entry"
-    local app_location
-    if [[ -d "/Applications/$display_name.app" ]]; then
-      app_location="Launchpad / Spotlight: $display_name"
-    else
-      app_location="Área de Trabalho: $display_name.app (arraste para a pasta de Aplicativos)"
-    fi
     echo "  $name"
-    echo "    • $app_location"
-    echo "    • Terminal: $app_dir/launch.sh"
+    if [[ -d "/Applications/$display_name.app" ]]; then
+      echo "    • Procure por \"$display_name\" no Launchpad ou no Spotlight"
+      echo "      (o atalho ficou em /Applications/$display_name.app)"
+    elif [[ -d "$HOME/Desktop/$display_name.app" ]]; then
+      echo "    • O atalho ficou na sua ÁREA DE TRABALHO: $display_name.app"
+      echo "      Pra ele aparecer no Launchpad, arraste pra pasta Aplicativos."
+    else
+      echo "    • Não achei o atalho — abra assim: $app_dir/launch.sh"
+    fi
+    echo "    • Pelo Terminal: $app_dir/launch.sh"
     echo
   done
   echo "  Relatório da instalação salvo em: $LOG_FILE"
