@@ -57,6 +57,17 @@ Aplicativos, tá certo?
 
 ## Deu algum problema? A gente resolve
 
+Primeiro, rode o diagnóstico. Ele não instala nem apaga nada — só olha como
+estão as coisas e salva um relatório na sua Área de Trabalho:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gbrunow/receita-macos/main/install.sh | bash -s -- --diagnostico
+```
+
+Vai aparecer o arquivo `sped-diagnostico.txt` na Área de Trabalho — é só mandar
+pra quem te passou o script. A instalação também deixa um `sped-instalacao.log`
+lá, com tudo o que aconteceu.
+
 - **"O Java 17 a 22 ainda não apareceu":** deixe o script instalar, ou rode
   `brew install --cask temurin@21`.
 - **"Não achei o MariaDB 10.11":** deixe o script instalar, ou rode
@@ -66,6 +77,9 @@ Aplicativos, tá certo?
   script procura em `~/Downloads`, mas também aceita outra pasta quando pergunta.
 - **"O banco de dados não subiu":** se o programa já estiver aberto, feche e rode
   de novo. A mensagem aponta um arquivo de log com os detalhes.
+- **"Não achei o atalho do programa":** em Macs de empresa ele vai parar na Área
+  de Trabalho. Se não estiver lá, abra pelo Terminal com
+  `~/ProgramasSPED/SpedContabil/launch.sh` e rode o diagnóstico acima.
 
 ## Como desinstalar
 
