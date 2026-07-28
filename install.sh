@@ -161,8 +161,15 @@ ensure_prereqs() {
   if [[ -z "$DETECTED_JAVA_HOME" ]]; then
     brew_install "o Java (Temurin 21)" brew install --cask temurin@21
     DETECTED_JAVA_HOME=$(find_java_home_in_range || true)
+    # O `brew install` vira no-op quando existe um recibo do cask mas o .pkg não
+    # está mais no disco ("already installed"). O reinstall força o .pkg de novo.
+    if [[ -z "$DETECTED_JAVA_HOME" ]]; then
+      info "O Java não apareceu na primeira tentativa. Vou reinstalar pra valer, companheiro."
+      brew reinstall --cask temurin@21 < /dev/tty || true
+      DETECTED_JAVA_HOME=$(find_java_home_in_range || true)
+    fi
     [[ -n "$DETECTED_JAVA_HOME" ]] \
-      || fail "O Java 17 a 22 ainda não apareceu, companheiro. Abra um Terminal novo e rode o script de novo."
+      || fail "O Java 17 a 22 ainda não apareceu, companheiro. Rode 'brew reinstall --cask temurin@21' na mão (ele vai pedir a senha do seu Mac), confira com '/usr/libexec/java_home -V' e depois rode o script de novo."
   fi
   # Fixa a JVM validada para o launcher (evita que um JDK 23+ instalado depois quebre o app)
   java_ver=$(jdk_feature_version "$DETECTED_JAVA_HOME/bin/java")
